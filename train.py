@@ -33,18 +33,51 @@ class TrainConfig:
     shard_index: int = 0
     num_shards: int = 1
     expert_name: str = "expert"
+    accelerator: str = "auto"
 
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+def resolve_device(accelerator: str):
+    accelerator = accelerator.lower()
+
+    if accelerator == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU accelerator requested but CUDA is not available.")
+        return torch.device("cuda"), False
+
+    if accelerator == "cpu":
+        return torch.device("cpu"), False
+
+    if accelerator == "tpu":
+        try:
+            import torch_xla.core.xla_model as xm  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "TPU accelerator requested but torch_xla is not installed on this node."
+            ) from exc
+        return xm.xla_device(), True
+
+    if accelerator == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda"), False
+        try:
+            import torch_xla.core.xla_model as xm  # type: ignore
+            return xm.xla_device(), True
+        except ImportError:
+            return torch.device("cpu"), False
+
+    raise ValueError("accelerator must be one of: auto, gpu, tpu, cpu")
 
 def setup_logger(work_dir: str):
     logging.basicConfig(
@@ -93,8 +126,11 @@ def load_checkpoint(path, device, model, optimizer):
         checkpoint.get('loader_state', None),
     )
 
-def train(config, model, device, loss_plot_path):
+def train(config, model, device, loss_plot_path, use_xla=False):
     model = model.to(device)
+    xm = None
+    if use_xla:
+        import torch_xla.core.xla_model as xm  # type: ignore
 
     if config.num_workers != 0:
         logger.warning(
@@ -196,7 +232,11 @@ def train(config, model, device, loss_plot_path):
         loss = F.mse_loss(pred_v, target_v)
         optimizer.zero_grad()
         loss.backward()
-        optimizer.step()
+        if use_xla:
+            xm.optimizer_step(optimizer, barrier=False)
+            xm.mark_step()
+        else:
+            optimizer.step()
 
         train_losses.append(loss.item())
         if step % config.log_freq == 0:
@@ -311,6 +351,7 @@ def parse_args():
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--expert-name", type=str, default="expert")
+    parser.add_argument("--accelerator", type=str, default="auto", choices=["auto", "gpu", "tpu", "cpu"])
     return parser.parse_args()
 
 
@@ -318,9 +359,8 @@ if __name__ == "__main__":
     args = parse_args()
     os.makedirs(args.work_dir, exist_ok=True)
     logger = setup_logger(args.work_dir)
-    # note: my cuda version is 12.9
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    device, use_xla = resolve_device(args.accelerator)
+    logger.info(f"Using device: {device} (accelerator={args.accelerator}, xla={use_xla})")
     
     config = TrainConfig(
         seed=args.seed,
@@ -337,6 +377,7 @@ if __name__ == "__main__":
         shard_index=args.shard_index,
         num_shards=args.num_shards,
         expert_name=args.expert_name,
+        accelerator=args.accelerator,
     )
     set_seed(config.seed)
 
@@ -354,4 +395,4 @@ if __name__ == "__main__":
     logger.info(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Train
-    train(config, model, device, loss_plot_path="loss_curve.png")
+    train(config, model, device, loss_plot_path="loss_curve.png", use_xla=use_xla)

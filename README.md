@@ -54,6 +54,7 @@ fab train-all
 
 Each expert trains independently on its own dataset shard (`shard_index`/`num_shards`).
 Jobs are launched with `nohup` so they keep running after orchestration exits.
+Accelerator is chosen per expert from `accelerator` (or falls back to `role` if `accelerator` is `auto`).
 
 ### 4) Launch asynchronous expert inference
 
@@ -71,5 +72,19 @@ fab logs --expert-name=tpu_expert --mode=infer --lines=100
 
 ### Notes
 
-- Training and inference scripts now support CLI args for orchestration (see `python train.py --help` and `python inference.py --help`).
+- Training and inference scripts now support `--accelerator {auto,gpu,tpu,cpu}`.
+- TPU mode requires `torch_xla` on the TPU node environment.
 - This setup intentionally runs experts independently (no synchronous gradient exchange).
+
+### Manual launch examples
+
+```bash
+# GPU expert
+python train.py --expert-name gpu_expert --num-shards 2 --shard-index 0 --accelerator gpu
+
+# TPU expert
+python train.py --expert-name tpu_expert --num-shards 2 --shard-index 1 --accelerator tpu
+
+# Inference from a trained expert checkpoint
+python inference.py --checkpoint-path ./runs/tpu_expert/step_010000.pt --accelerator tpu --expert-name tpu_expert
+```
