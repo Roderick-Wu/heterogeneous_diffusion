@@ -191,7 +191,7 @@ def _infer_command(expert: ExpertConfig) -> str:
 
 
 @task
-def train_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow=False, interval=20, lines=10):
+def train_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow="false", interval=20, lines=10):
     """Kick off independent expert training jobs on all configured nodes."""
     experts = _load_experts(config_path)
     num_shards = len(experts)
@@ -210,7 +210,7 @@ def train_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow=False, interval=20, l
 
 
 @task
-def infer_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow=False, interval=20, lines=10):
+def infer_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow="false", interval=20, lines=10):
     """Kick off independent inference jobs on all configured nodes."""
     experts = _load_experts(config_path)
 

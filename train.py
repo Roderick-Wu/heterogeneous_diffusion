@@ -64,7 +64,9 @@ def resolve_device(accelerator: str):
             import torch_xla.core.xla_model as xm  # type: ignore
         except ImportError as exc:
             raise RuntimeError(
-                "TPU accelerator requested but torch_xla is not installed on this node."
+                "TPU accelerator requested but torch_xla import failed on this node. "
+                "This is often a torch/torch_xla ABI mismatch. "
+                f"Import error: {exc!r}"
             ) from exc
         return xm.xla_device(), True
 
