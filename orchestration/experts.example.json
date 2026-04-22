@@ -1,0 +1,34 @@
+{
+  "experts": [
+    {
+      "name": "gpu_expert",
+      "host": "gpu-node.example.com",
+      "user": "ubuntu",
+      "role": "gpu",
+      "project_dir": "/home/ubuntu/heterogeneous_diffusion",
+      "python_bin": "python3",
+      "train_work_dir": "./runs/gpu_expert",
+      "infer_work_dir": "./inference/gpu_expert",
+      "checkpoint_path": "./runs/gpu_expert/step_010000.pt",
+      "dataset_dir": "./dataset",
+      "train_steps": 10000,
+      "train_batch_size": 64,
+      "inference_samples": 64
+    },
+    {
+      "name": "tpu_expert",
+      "host": "tpu-node.example.com",
+      "user": "ubuntu",
+      "role": "tpu",
+      "project_dir": "/home/ubuntu/heterogeneous_diffusion",
+      "python_bin": "python3",
+      "train_work_dir": "./runs/tpu_expert",
+      "infer_work_dir": "./inference/tpu_expert",
+      "checkpoint_path": "./runs/tpu_expert/step_010000.pt",
+      "dataset_dir": "./dataset",
+      "train_steps": 10000,
+      "train_batch_size": 64,
+      "inference_samples": 64
+    }
+  ]
+}

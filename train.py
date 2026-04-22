@@ -1,4 +1,5 @@
 import os
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,6 +30,9 @@ class TrainConfig:
     #resume_from: str = "./mnist_flow_matching/step_010000.pt"
     val_split: float = 0.1 
     num_workers: int = 0
+    shard_index: int = 0
+    num_shards: int = 1
+    expert_name: str = "expert"
 
 def set_seed(seed):
     random.seed(seed)
@@ -99,6 +103,11 @@ def train(config, model, device, loss_plot_path):
         )
     
     dataset = data.MNISTDataset(save_path=config.dataset_dir, train=True)
+    dataset = data.take_dataset_shard(
+        dataset,
+        shard_index=config.shard_index,
+        num_shards=config.num_shards,
+    )
     train_dataset, val_dataset = data.shuffle_and_split_dataset(dataset, val_split=config.val_split)
 
     #dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, num_workers=4, pin_memory=True)
@@ -153,6 +162,10 @@ def train(config, model, device, loss_plot_path):
 
     os.makedirs(config.work_dir, exist_ok=True)
     logger.info(f"Checkpoint directory: {config.work_dir}")
+    logger.info(
+        f"Expert {config.expert_name}: shard {config.shard_index + 1}/{config.num_shards}, "
+        f"train_size={len(train_dataset)}, val_size={len(val_dataset)}"
+    )
 
     train_iter = iter(train_dataloader)
     val_iter = iter(val_dataloader)
@@ -282,14 +295,49 @@ def train(config, model, device, loss_plot_path):
     logger.info(f"\nTraining completed!")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train a DiT flow-matching model on MNIST.")
+    parser.add_argument("--work-dir", type=str, default="./mnist_flow_matching")
+    parser.add_argument("--dataset-dir", type=str, default="./dataset")
+    parser.add_argument("--resume-from", type=str, default=None)
+    parser.add_argument("--steps", type=int, default=10000)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--checkpoint-freq", type=int, default=100)
+    parser.add_argument("--log-freq", type=int, default=10)
+    parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--expert-name", type=str, default="expert")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    os.makedirs("./mnist_flow_matching", exist_ok=True)
-    logger = setup_logger("./mnist_flow_matching")
+    args = parse_args()
+    os.makedirs(args.work_dir, exist_ok=True)
+    logger = setup_logger(args.work_dir)
     # note: my cuda version is 12.9
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
     
-    config = TrainConfig()
+    config = TrainConfig(
+        seed=args.seed,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        steps=args.steps,
+        checkpoint_freq=args.checkpoint_freq,
+        log_freq=args.log_freq,
+        dataset_dir=args.dataset_dir,
+        work_dir=args.work_dir,
+        resume_from=args.resume_from,
+        val_split=args.val_split,
+        num_workers=args.num_workers,
+        shard_index=args.shard_index,
+        num_shards=args.num_shards,
+        expert_name=args.expert_name,
+    )
     set_seed(config.seed)
 
     # Create model

@@ -85,3 +85,18 @@ def shuffle_and_split_dataset(dataset, val_split=0.2):
     val_subset = torch.utils.data.Subset(dataset, val_indices)
     
     return train_subset, val_subset
+
+
+def take_dataset_shard(dataset, shard_index=0, num_shards=1):
+    if num_shards <= 0:
+        raise ValueError("num_shards must be > 0")
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError("shard_index must be in [0, num_shards)")
+
+    if num_shards == 1:
+        return dataset
+
+    indices = [i for i in range(len(dataset)) if i % num_shards == shard_index]
+    if len(indices) == 0:
+        raise ValueError("Shard produced no samples. Check shard_index/num_shards.")
+    return torch.utils.data.Subset(dataset, indices)

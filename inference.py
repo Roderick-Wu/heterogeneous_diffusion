@@ -1,4 +1,5 @@
 import os
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -63,7 +64,26 @@ def generate_samples(model_net, device, num_samples, num_steps, t_start, t_end):
     return z
 
 def main():
-    config = InferenceConfig()
+    parser = argparse.ArgumentParser(description="Run inference with a trained DiT flow-matching model.")
+    parser.add_argument("--checkpoint-path", type=str, default="./mnist_flow_matching/step_010000.pt")
+    parser.add_argument("--work-dir", type=str, default="./inference")
+    parser.add_argument("--num-samples", type=int, default=64)
+    parser.add_argument("--num-steps", type=int, default=100)
+    parser.add_argument("--t-start", type=float, default=1.0)
+    parser.add_argument("--t-end", type=float, default=1e-2)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--expert-name", type=str, default="expert")
+    args = parser.parse_args()
+
+    config = InferenceConfig(
+        seed=args.seed,
+        checkpoint_path=args.checkpoint_path,
+        work_dir=args.work_dir,
+        num_samples=args.num_samples,
+        num_steps=args.num_steps,
+        t_start=args.t_start,
+        t_end=args.t_end,
+    )
     set_seed(config.seed)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,7 +112,10 @@ def main():
     for i in range(samples.size(0)):
         plt.imsave(os.path.join(config.work_dir, f"sample_{i:03d}.png"), samples[i].squeeze(), cmap='gray')
 
-    print(f"Generated {config.num_samples} samples saved to {config.work_dir}")
+    print(
+        f"[{args.expert_name}] Generated {config.num_samples} samples "
+        f"saved to {config.work_dir}"
+    )
 
 if __name__ == "__main__":
     main()
