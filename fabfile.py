@@ -1,5 +1,7 @@
 import json
 import os
+import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -23,6 +25,8 @@ class ExpertConfig:
     train_batch_size: int = 64
     inference_samples: int = 64
     accelerator: str = "auto"
+    ssh_key: str = ""
+    venv_activate: str = ".venv/bin/activate"
 
 
 def _expert_accelerator(expert: ExpertConfig) -> str:
@@ -55,21 +59,30 @@ def _load_experts(config_path: str = DEFAULT_CONFIG_PATH) -> List[ExpertConfig]:
     return experts
 
 
-def _conn_kwargs() -> Dict[str, object]:
-    key_path = os.getenv("ORCH_SSH_KEY")
+def _conn_kwargs(expert: ExpertConfig) -> Dict[str, object]:
+    key_path = expert.ssh_key.strip() if expert.ssh_key else ""
+    if not key_path:
+        key_path = os.getenv("ORCH_SSH_KEY", "").strip()
+
     kwargs: Dict[str, object] = {}
     if key_path:
         kwargs["connect_kwargs"] = {"key_filename": key_path}
     return kwargs
 
 
-def _run_detached(c, command: str) -> None:
-    # Uses nohup so central orchestrator can exit while worker keeps training.
-    c.run(f"nohup bash -lc '{command}' > /dev/null 2>&1 &", pty=False)
+def _masked_key_path(key_path: str) -> str:
+    if not key_path:
+        return "<default-agent-or-config>"
+    return key_path
+
+
+def _auth_summary(expert: ExpertConfig) -> str:
+    key_path = expert.ssh_key.strip() if expert.ssh_key else os.getenv("ORCH_SSH_KEY", "").strip()
+    return _masked_key_path(key_path)
 
 
 def _connection_for_expert(ctx, expert: ExpertConfig) -> Connection:
-    connect_kwargs = _conn_kwargs().get("connect_kwargs", {})
+    connect_kwargs = _conn_kwargs(expert).get("connect_kwargs", {})
     return Connection(
         host=expert.host,
         user=expert.user,
@@ -78,13 +91,76 @@ def _connection_for_expert(ctx, expert: ExpertConfig) -> Connection:
     )
 
 
+def _run_detached(c, command: str) -> None:
+    # Uses nohup so central orchestrator can exit while worker keeps training.
+    c.run(f"nohup bash -lc '{command}' > /dev/null 2>&1 &", pty=False)
+
+
+def _to_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _process_pattern(mode: str) -> str:
+    if mode == "train":
+        return "train.py"
+    if mode == "infer":
+        return "inference.py"
+    raise ValueError("mode must be one of: train, infer")
+
+
+def _log_path_for_mode(expert: ExpertConfig, mode: str) -> str:
+    if mode == "train":
+        return f"{expert.train_work_dir}/train.log"
+    if mode == "infer":
+        return f"{expert.infer_work_dir}/inference.log"
+    raise ValueError("mode must be one of: train, infer")
+
+
+def _monitor_jobs(ctx, experts: List[ExpertConfig], mode: str, interval: int = 20, lines: int = 10):
+    pattern = _process_pattern(mode)
+
+    while True:
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n===== {mode.upper()} monitor @ {ts} UTC =====")
+        running_count = 0
+
+        for expert in experts:
+            c = _connection_for_expert(ctx, expert)
+            print(f"\n[{expert.name} @ {expert.host}]")
+
+            status_result = c.run(
+                f"if pgrep -fa '{pattern}' >/dev/null; then echo RUNNING; else echo STOPPED; fi",
+                hide=True,
+                warn=True,
+            )
+            status = status_result.stdout.strip().splitlines()[-1] if status_result.stdout.strip() else "UNKNOWN"
+            if status == "RUNNING":
+                running_count += 1
+            print(f"Status: {status}")
+
+            log_path = _log_path_for_mode(expert, mode)
+            c.run(f"tail -n {int(lines)} {log_path}", warn=True)
+
+        if running_count == 0:
+            print(f"\nNo active {mode} jobs remain. Exiting monitor.")
+            break
+
+        print(f"\nSleeping {int(interval)}s before next update...")
+        time.sleep(int(interval))
+
+
 def _train_command(expert: ExpertConfig, shard_index: int, num_shards: int) -> str:
     log_path = f"{expert.train_work_dir}/train.log"
     accelerator = _expert_accelerator(expert)
     return (
         f"cd {expert.project_dir} && "
+        f"source {expert.venv_activate} && "
         f"mkdir -p {expert.train_work_dir} && "
-        f"{expert.python_bin} train.py "
+        f"python train.py "
         f"--work-dir {expert.train_work_dir} "
         f"--dataset-dir {expert.dataset_dir} "
         f"--steps {expert.train_steps} "
@@ -102,8 +178,9 @@ def _infer_command(expert: ExpertConfig) -> str:
     accelerator = _expert_accelerator(expert)
     return (
         f"cd {expert.project_dir} && "
+        f"source {expert.venv_activate} && "
         f"mkdir -p {expert.infer_work_dir} && "
-        f"{expert.python_bin} inference.py "
+        f"python inference.py "
         f"--checkpoint-path {expert.checkpoint_path} "
         f"--work-dir {expert.infer_work_dir} "
         f"--num-samples {expert.inference_samples} "
@@ -114,32 +191,40 @@ def _infer_command(expert: ExpertConfig) -> str:
 
 
 @task
-def train_all(ctx, config_path=DEFAULT_CONFIG_PATH):
+def train_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow=False, interval=20, lines=10):
     """Kick off independent expert training jobs on all configured nodes."""
     experts = _load_experts(config_path)
     num_shards = len(experts)
 
     for shard_index, expert in enumerate(experts):
         print(f"Launching train job for {expert.name} ({expert.role}) on {expert.host}")
+        print(f"Auth key: {_auth_summary(expert)}")
         c = _connection_for_expert(ctx, expert)
         cmd = _train_command(expert, shard_index, num_shards)
         _run_detached(c, cmd)
 
     print("Train jobs launched.")
 
+    if _to_bool(follow):
+        _monitor_jobs(ctx, experts, mode="train", interval=int(interval), lines=int(lines))
+
 
 @task
-def infer_all(ctx, config_path=DEFAULT_CONFIG_PATH):
+def infer_all(ctx, config_path=DEFAULT_CONFIG_PATH, follow=False, interval=20, lines=10):
     """Kick off independent inference jobs on all configured nodes."""
     experts = _load_experts(config_path)
 
     for expert in experts:
         print(f"Launching inference job for {expert.name} ({expert.role}) on {expert.host}")
+        print(f"Auth key: {_auth_summary(expert)}")
         c = _connection_for_expert(ctx, expert)
         cmd = _infer_command(expert)
         _run_detached(c, cmd)
 
     print("Inference jobs launched.")
+
+    if _to_bool(follow):
+        _monitor_jobs(ctx, experts, mode="infer", interval=int(interval), lines=int(lines))
 
 
 @task
@@ -173,3 +258,10 @@ def logs(ctx, expert_name, lines=50, mode="train", config_path=DEFAULT_CONFIG_PA
         raise ValueError("mode must be one of: train, infer")
 
     c.run(f"tail -n {int(lines)} {log_path}")
+
+
+@task
+def monitor(ctx, mode="train", config_path=DEFAULT_CONFIG_PATH, interval=20, lines=10):
+    """Continuously print job status and log updates until all jobs stop."""
+    experts = _load_experts(config_path)
+    _monitor_jobs(ctx, experts, mode=mode, interval=int(interval), lines=int(lines))
